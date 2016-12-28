@@ -21,12 +21,12 @@
 
 #pragma region Variables
 
-const long long COUNT = 500;
+const long long COUNT = 2000;
 __device__ const float SPEED = 0.1f;
 const float G_CONSTANT = 0.1f;
 const float POINT_SIZE = 3.0f;
 const float TERMINAL_VELOCITY = 25.0f;
-__device__ const float MOUSE_MASS = 25000.0f;
+__device__ const float MOUSE_MASS = 250.0f;
 
 float mTime;
 GLuint positionsVBO;
