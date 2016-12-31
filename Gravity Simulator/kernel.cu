@@ -16,6 +16,7 @@
 #include "cuda_gl_interop.h"
 
 #include "shader.hpp"
+#include "FPCamera.h"
 #pragma endregion
 
 #define MIN(a,b) (((a) < (b)) ? (a) : (b))
@@ -134,6 +135,13 @@ __global__ void setVal(float3* arr, float3 val) {
 }
 #pragma endregion
 
+GLuint MVP_ID;
+glm::mat4 projectionMatrix;
+FPCamera* cam;
+int lastKey = -1;
+
+void handleKeyPress(GLFWwindow*, int, int, int, int);
+
 int main(int argv, char ** argc)
 {
 	float3* h_velocity = new float3[COUNT];
@@ -231,20 +239,17 @@ int main(int argv, char ** argc)
 		positions[i * 6 + 5] = MAX(0, h_masses[i] / MAX_MASS - 0.5f) * 2;
 	}
 
+	glfwSetKeyCallback(mWindow, &handleKeyPress);
+
+	MVP_ID = glGetUniformLocation(programID, "mvp");
+	projectionMatrix = glm::perspective(45.0f, (float)(mode->width) / mode->height, 0.5f, 100.0f);
+	cam = new FPCamera();
 
 	glBufferData(GL_ARRAY_BUFFER, COUNT * 6 * sizeof(GLfloat), positions, GL_STATIC_DRAW);
 	cudaGraphicsGLRegisterBuffer(&positionsVBO_CUDA, positionsVBO, cudaGraphicsMapFlagsWriteDiscard);
 	cudaGraphicsMapResources(1, &positionsVBO_CUDA, 0);
 	size_t num_bytes;
 	cudaGraphicsResourceGetMappedPointer((void**)&positions, &num_bytes, positionsVBO_CUDA);
-
-	GLuint MVP_ID = glGetUniformLocation(programID, "mvp");
-	glm::mat4 projectionMatrix = glm::perspective(45.0f, (float)(mode->width) / mode->height, 0.5f, 100.0f);
-	glm::mat4 viewMatrix = glm::lookAt(glm::vec3(10.0f, 10.0f, 10.0f), glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
-	glm::mat4 modelMatrix(1.0f);
-	glm::mat4 MVP = projectionMatrix * viewMatrix * modelMatrix;
-
-	glUniformMatrix4fv(MVP_ID, 1, GL_FALSE, &MVP[0][0]);
 
 	glEnable(GL_DEPTH_TEST);
 	glDepthFunc(GL_LESS);
@@ -267,11 +272,43 @@ void Update(float time) {
 	{
 		calculateForce <<<(COUNT+1023)/1024, 1024 >>>(positions, forces, masses, G_CONSTANT, i);
 	}
-	//glfwGetCursorPos(mWindow, &mouseX, &mouseY);
+	glfwGetCursorPos(mWindow, &mouseX, &mouseY);
+	glfwSetCursorPos(mWindow, 1920.0f / 2, 1080.0f / 2);
 	//calculateForceMouse <<<(COUNT+1023)/1024, 1024 >>> (positions, forces, masses, G_CONSTANT, mouseX/700.0f*2.0f-1.0f, (700-mouseY) / 700.0f * 2.0f - 1.0f);
 	simulateFrame <<<(COUNT + 1023) / 1024, 1024 >>>(positions, velocity, time, POINT_SIZE, forces, masses, TERMINAL_VELOCITY);
+	if (lastKey == GLFW_KEY_W) {
+		cam->Walk(time * 5);
+	}
+	if (lastKey == GLFW_KEY_S) {
+		cam->Walk(time * -5);
+	}
+	if (lastKey == GLFW_KEY_A) {
+		cam->Strafe(time * 5);
+	}
+	if (lastKey == GLFW_KEY_D) {
+		cam->Strafe(time * -5);
+	}
+	cam->Update(0);
+	cam->Yaw(-mouseX + 1920.0f / 2);
+	cam->Pitch(mouseY - 1080.0f / 2);
 }
 
 void Draw() {
+	cam->UpdateViewMatrix();
+	glm::mat4 viewMatrix = cam->getViewMatrix();
+	glm::mat4 modelMatrix(1.0f);
+	glm::mat4 MVP = projectionMatrix * viewMatrix * modelMatrix;
+
+	glUniformMatrix4fv(MVP_ID, 1, GL_FALSE, &MVP[0][0]);
+	
 	glDrawArrays(GL_POINTS, 0, COUNT);
+}
+
+void handleKeyPress(GLFWwindow * window, int key, int scancode, int action, int mods)
+{
+	if (action != GLFW_RELEASE) {
+		lastKey = key;
+	}
+	else
+		lastKey = -1;
 }
