@@ -231,9 +231,9 @@ int main(int argv, char ** argc)
 
 	positions = new GLfloat[COUNT * 6];
 	for (int i = 0; i < COUNT; i++) {
-		positions[i * 6] = (((float)(rand())) / RAND_MAX) * 10 - 5;
-		positions[i * 6 + 1] = (((float)(rand())) / RAND_MAX) * 10 - 5;
-		positions[i * 6 + 2] = (((float)(rand())) / RAND_MAX) * 10 - 5;
+		positions[i * 6] = (((float)(rand())) / RAND_MAX) * 20 - 10;
+		positions[i * 6 + 1] = (((float)(rand())) / RAND_MAX) * 20 - 10;
+		positions[i * 6 + 2] = (((float)(rand())) / RAND_MAX) * 20 - 10;
 		positions[i * 6 + 3] = 1 - MAX(0, h_masses[i] / MAX_MASS - 0.5f) * 2;
 		positions[i * 6 + 4] = 0;
 		positions[i * 6 + 5] = MAX(0, h_masses[i] / MAX_MASS - 0.5f) * 2;
@@ -276,21 +276,8 @@ void Update(float time) {
 	glfwSetCursorPos(mWindow, 1920.0f / 2, 1080.0f / 2);
 	//calculateForceMouse <<<(COUNT+1023)/1024, 1024 >>> (positions, forces, masses, G_CONSTANT, mouseX/700.0f*2.0f-1.0f, (700-mouseY) / 700.0f * 2.0f - 1.0f);
 	simulateFrame <<<(COUNT + 1023) / 1024, 1024 >>>(positions, velocity, time, POINT_SIZE, forces, masses, TERMINAL_VELOCITY);
-	if (lastKey == GLFW_KEY_W) {
-		cam->Walk(time * 5);
-	}
-	if (lastKey == GLFW_KEY_S) {
-		cam->Walk(time * -5);
-	}
-	if (lastKey == GLFW_KEY_A) {
-		cam->Strafe(time * 5);
-	}
-	if (lastKey == GLFW_KEY_D) {
-		cam->Strafe(time * -5);
-	}
-	cam->Update(0);
-	cam->Yaw(-mouseX + 1920.0f / 2);
-	cam->Pitch(mouseY - 1080.0f / 2);
+	cam->setRotation(mouseY - 1080.0f / 2 , -mouseX + 1920.0f / 2, 0.0f);
+	cam->Update(time);
 }
 
 void Draw() {
@@ -307,8 +294,31 @@ void Draw() {
 void handleKeyPress(GLFWwindow * window, int key, int scancode, int action, int mods)
 {
 	if (action != GLFW_RELEASE) {
-		lastKey = key;
+		switch (key) {
+		case GLFW_KEY_W:
+			cam->setVelocity(cam->getVelocity().x, cam->getVelocity().y, 5);
+			break;
+		case GLFW_KEY_A:
+			cam->setVelocity(5, cam->getVelocity().y, cam->getVelocity().z);
+			break;
+		case GLFW_KEY_S:
+			cam->setVelocity(cam->getVelocity().x, cam->getVelocity().y, -5);
+			break;
+		case GLFW_KEY_D:
+			cam->setVelocity(-5, cam->getVelocity().y, cam->getVelocity().z);
+			break;
+		}
 	}
-	else
-		lastKey = -1;
+	else {
+		switch (key) {
+		case GLFW_KEY_W:
+		case GLFW_KEY_S:
+			cam->setVelocity(cam->getVelocity().x, cam->getVelocity().y, 0);
+			break;
+		case GLFW_KEY_A:
+		case GLFW_KEY_D:
+			cam->setVelocity(0, cam->getVelocity().y, cam->getVelocity().z);
+			break;
+		}
+	}
 }
