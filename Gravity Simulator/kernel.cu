@@ -1,6 +1,9 @@
 #pragma region Includes
 #include <gl/glew.h>
 #include <gl/glfw3.h>
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtx/transform.hpp>
 
 #include <math.h>
 #include <stdlib.h>
@@ -17,16 +20,18 @@
 
 #define MIN(a,b) (((a) < (b)) ? (a) : (b))
 #define MAX(a,b) (((a) > (b)) ? (a) : (b))
-#define EPS 2
+#define EPS 1e-1
 
 #pragma region Variables
 
-const long long COUNT = 2000;
+const long long COUNT = 1000;
 __device__ const float SPEED = 0.1f;
-const float G_CONSTANT = 0.1f;
+const float G_CONSTANT = 0.01f;
 const float POINT_SIZE = 3.0f;
-const float TERMINAL_VELOCITY = 25.0f;
-__device__ const float MOUSE_MASS = 250.0f;
+const int MAX_MASS = 250;
+const int MIN_MASS = 100;
+const float TERMINAL_VELOCITY = 15.0f;
+__device__ const float MOUSE_MASS = 2000.0f;
 
 float mTime;
 GLuint positionsVBO;
@@ -34,8 +39,8 @@ GLuint VAO;
 
 struct cudaGraphicsResource* positionsVBO_CUDA;
 
-float2* velocity;
-float2* forces;
+float3* velocity;
+float3* forces;
 float* masses;
 
 GLfloat* positions;
@@ -48,7 +53,7 @@ void Update(float time);
 void Draw();
 
 #pragma region Kernels
-__global__ void simulateFrame(float* positions, float2* velocity, float delta, float particleRadius, float2* forces, float* particleMass, float terminalVelocity)
+__global__ void simulateFrame(float* positions, float3* velocity, float delta, float particleRadius, float3* forces, float* particleMass, float terminalVelocity)
 {
 	int idx = threadIdx.x + blockIdx.x * blockDim.x;
 	if (idx >= COUNT) return;
@@ -79,27 +84,30 @@ __global__ void simulateFrame(float* positions, float2* velocity, float delta, f
 	}
 }
 
-__global__ void calculateForce(float* positions, float2* forces, float* particleMass, float gravityConstant, int idx) {
+__global__ void calculateForce(float* positions, float3* forces, float* particleMass, float gravityConstant, int idx) {
 	long long ii = threadIdx.x + blockIdx.x * blockDim.x;
 	int id = ii;
 	if (id >= COUNT || id == idx) {
 		return;
 	}
-	float x1, x2, y1, y2;
+	float x1, x2, y1, y2, z1, z2;
 	x1 = positions[idx * 6];
 	y1 = positions[idx * 6 + 1];
+	z1 = positions[idx * 6 + 2];
 	x2 = positions[id * 6];
 	y2 = positions[id * 6 + 1];
-	float distance = ((x1 - x2)*(x1 - x2) + (y1 - y2) * (y1 - y2)) + EPS;
+	z2 = positions[id * 6 + 2];
+	float distance = ((x1 - x2)*(x1 - x2) + (y1 - y2) * (y1 - y2) + (z1 - z2) * (z1 - z2)) + EPS;
 	float force = gravityConstant * particleMass[idx] * particleMass[id] / distance;
-	float2 vec = make_float2(x1 - x2, y1 - y2);
-	float mag = sqrt(vec.x*vec.x + vec.y*vec.y) + EPS;
-	vec.x /= mag, vec.y /= mag;
+	float3 vec = make_float3(x1 - x2, y1 - y2, z1 - z2);
+	float mag = sqrt(vec.x*vec.x + vec.y*vec.y + vec.z*vec.z) + EPS;
+	vec.x /= mag, vec.y /= mag, vec.z /= mag;
 	forces[id].x += vec.x * force;
 	forces[id].y += vec.y * force;
+	forces[id].z += vec.z * force;
 }
 
-__global__ void calculateForceMouse(float* positions, float2* forces, float* particleMass, float gravityConstant, float mouseX, float mouseY) {
+__global__ void calculateForceMouse(float* positions, float3* forces, float* particleMass, float gravityConstant, float mouseX, float mouseY) {
 	long long ii = threadIdx.x + blockIdx.x * blockDim.x;
 	int id = ii;
 	if (id >= COUNT) {
@@ -119,7 +127,7 @@ __global__ void calculateForceMouse(float* positions, float2* forces, float* par
 	forces[id].y += vec.y * force;
 }
 
-__global__ void setVal(float2* arr, float2 val) {
+__global__ void setVal(float3* arr, float3 val) {
 	int idx = threadIdx.x + blockIdx.x * blockDim.x;
 	if (idx >= COUNT) return;
 	arr[idx] = val;
@@ -128,9 +136,9 @@ __global__ void setVal(float2* arr, float2 val) {
 
 int main(int argv, char ** argc)
 {
-	float2* h_velocity = new float2[COUNT];
+	float3* h_velocity = new float3[COUNT];
 
-	//srand(time(NULL));
+	srand(time(NULL));
 
 	for (int idx = 0; idx < COUNT; idx++)
 	{
@@ -140,22 +148,25 @@ int main(int argv, char ** argc)
 		h_velocity[idx].y = rand() % 10 + 1;
 		if (rand() % 2)
 			h_velocity[idx].y *= -1;
+		h_velocity[idx].z = rand() % 10 + 1;
+		if (rand() % 2)
+			h_velocity[idx].z *= -1;
 	}
 
 	float* h_masses = new float[COUNT];
 
 	for (int i = 0; i < COUNT; i++) {
-		h_masses[i] = rand() % 150 + 100;
+		h_masses[i] = rand() % (MAX_MASS - MIN_MASS) + MIN_MASS;
 	}
 
 
 	cudaMalloc(&masses, COUNT * sizeof(float));
 	cudaMemcpy(masses, h_masses, COUNT * sizeof(float), cudaMemcpyHostToDevice);
 
-	cudaMalloc(&velocity, COUNT * sizeof(float2));
-	cudaMemcpy(velocity, h_velocity, COUNT * sizeof(float2), cudaMemcpyHostToDevice);
-	cudaMalloc(&forces, COUNT*sizeof(float2));
-	setVal <<<(COUNT + 1023) / 1024, 1024 >>>(forces, make_float2(0, 0));
+	cudaMalloc(&velocity, COUNT * sizeof(float3));
+	cudaMemcpy(velocity, h_velocity, COUNT * sizeof(float3), cudaMemcpyHostToDevice);
+	cudaMalloc(&forces, COUNT*sizeof(float3));
+	setVal <<<(COUNT + 1023) / 1024, 1024 >>>(forces, make_float3(0, 0, 0));
 
 	if (!glfwInit())
 	{
@@ -171,10 +182,10 @@ int main(int argv, char ** argc)
 
 	GLFWmonitor* monitor = glfwGetPrimaryMonitor();
 	const GLFWvidmode* mode = glfwGetVideoMode(monitor);
-	int screenWidth = 700;
-	int screenHeight = 700;
+	int screenWidth = mode->width;
+	int screenHeight = mode->height;
 
-	mWindow = glfwCreateWindow(screenWidth, screenHeight, "Gravity Sim", NULL, NULL);
+	mWindow = glfwCreateWindow(screenWidth, screenHeight, "Gravity Sim", monitor, NULL);
 
 	if (mWindow == NULL) {
 		fprintf(stderr, "Failed to open GLFW window. If you have an Intel GPU, they are not 3.3 compatible. Try the 2.1 version of the tutorials.\n");
@@ -212,12 +223,12 @@ int main(int argv, char ** argc)
 
 	positions = new GLfloat[COUNT * 6];
 	for (int i = 0; i < COUNT; i++) {
-		positions[i * 6] = (((float)(rand())) / RAND_MAX) * 2 - 1;
-		positions[i * 6 + 1] = (((float)(rand())) / RAND_MAX) * 2 - 1;
-		positions[i * 6 + 2] = 0;
-		positions[i * 6 + 3] = 1 - MAX(0, h_masses[i] / 250.0f - 0.5f) * 2;
+		positions[i * 6] = (((float)(rand())) / RAND_MAX) * 10 - 5;
+		positions[i * 6 + 1] = (((float)(rand())) / RAND_MAX) * 10 - 5;
+		positions[i * 6 + 2] = (((float)(rand())) / RAND_MAX) * 10 - 5;
+		positions[i * 6 + 3] = 1 - MAX(0, h_masses[i] / MAX_MASS - 0.5f) * 2;
 		positions[i * 6 + 4] = 0;
-		positions[i * 6 + 5] = MAX(0, h_masses[i] / 250.0f - 0.5f) * 2;
+		positions[i * 6 + 5] = MAX(0, h_masses[i] / MAX_MASS - 0.5f) * 2;
 	}
 
 
@@ -226,6 +237,17 @@ int main(int argv, char ** argc)
 	cudaGraphicsMapResources(1, &positionsVBO_CUDA, 0);
 	size_t num_bytes;
 	cudaGraphicsResourceGetMappedPointer((void**)&positions, &num_bytes, positionsVBO_CUDA);
+
+	GLuint MVP_ID = glGetUniformLocation(programID, "mvp");
+	glm::mat4 projectionMatrix = glm::perspective(45.0f, (float)(mode->width) / mode->height, 0.5f, 100.0f);
+	glm::mat4 viewMatrix = glm::lookAt(glm::vec3(10.0f, 10.0f, 10.0f), glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+	glm::mat4 modelMatrix(1.0f);
+	glm::mat4 MVP = projectionMatrix * viewMatrix * modelMatrix;
+
+	glUniformMatrix4fv(MVP_ID, 1, GL_FALSE, &MVP[0][0]);
+
+	glEnable(GL_DEPTH_TEST);
+	glDepthFunc(GL_LESS);
 
 	do {
 		float time = (float)(glfwGetTime() - mTime);
@@ -239,14 +261,14 @@ int main(int argv, char ** argc)
 }
 
 void Update(float time) {
-	glClear(GL_COLOR_BUFFER_BIT);
-	setVal <<<(COUNT+1023)/1024,1024 >>>(forces, make_float2(0, 0));
+	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+	setVal <<<(COUNT+1023)/1024,1024 >>>(forces, make_float3(0, 0, 0));
 	for (int i = 0; i < COUNT; i++)
 	{
 		calculateForce <<<(COUNT+1023)/1024, 1024 >>>(positions, forces, masses, G_CONSTANT, i);
 	}
-	glfwGetCursorPos(mWindow, &mouseX, &mouseY);
-	calculateForceMouse <<<(COUNT+1023)/1024, 1024 >>> (positions, forces, masses, G_CONSTANT, mouseX/500.0f*2.0f-1.0f, (500-mouseY) / 500.0f * 2.0f - 1.0f);
+	//glfwGetCursorPos(mWindow, &mouseX, &mouseY);
+	//calculateForceMouse <<<(COUNT+1023)/1024, 1024 >>> (positions, forces, masses, G_CONSTANT, mouseX/700.0f*2.0f-1.0f, (700-mouseY) / 700.0f * 2.0f - 1.0f);
 	simulateFrame <<<(COUNT + 1023) / 1024, 1024 >>>(positions, velocity, time, POINT_SIZE, forces, masses, TERMINAL_VELOCITY);
 }
 
