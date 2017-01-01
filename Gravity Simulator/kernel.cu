@@ -1,9 +1,9 @@
-#pragma region Includes
 #include <gl/glew.h>
 #include <gl/glfw3.h>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtx/transform.hpp>
+#include <gl/freeglut.h>
 
 #include <math.h>
 #include <stdlib.h>
@@ -17,7 +17,6 @@
 
 #include "shader.hpp"
 #include "FPCamera.h"
-#pragma endregion
 
 #define MIN(a,b) (((a) < (b)) ? (a) : (b))
 #define MAX(a,b) (((a) > (b)) ? (a) : (b))
@@ -28,11 +27,10 @@
 const long long COUNT = 1000;
 __device__ const float SPEED = 0.1f;
 const float G_CONSTANT = 0.01f;
-const float POINT_SIZE = 3.0f;
+const float POINT_SIZE = 5.0f;
 const int MAX_MASS = 250;
 const int MIN_MASS = 100;
-const float TERMINAL_VELOCITY = 15.0f;
-__device__ const float MOUSE_MASS = 2000.0f;
+const float TERMINAL_VELOCITY = 25.0f;
 
 float mTime;
 GLuint positionsVBO;
@@ -61,28 +59,16 @@ __global__ void simulateFrame(float* positions, float3* velocity, float delta, f
 	delta *= SPEED;
 	velocity[idx].x += delta * forces[idx].x / particleMass[idx];
 	velocity[idx].y += delta * forces[idx].y / particleMass[idx];
+	velocity[idx].z += delta * forces[idx].z / particleMass[idx];
 	velocity[idx].x = MIN(terminalVelocity, velocity[idx].x);
 	velocity[idx].y = MIN(terminalVelocity, velocity[idx].y);
+	velocity[idx].z = MIN(terminalVelocity, velocity[idx].z);
 	velocity[idx].x = MAX(-terminalVelocity, velocity[idx].x);
 	velocity[idx].y = MAX(-terminalVelocity, velocity[idx].y);
+	velocity[idx].z = MAX(-terminalVelocity, velocity[idx].z);
 	positions[idx * 6] += velocity[idx].x * delta;
 	positions[idx * 6 + 1] += velocity[idx].y * delta;
-	if (positions[idx * 6] < -1 ) {
-		velocity[idx].x *= -1;
-		positions[idx * 6] = -1;
-	}
-	if (positions[idx * 6] > 1) {
-		velocity[idx].x *= -1;
-		positions[idx * 6] = 1;
-	}
-	if (positions[idx * 6 + 1] < -1) {
-		velocity[idx].y *= -1;
-		positions[idx * 6 + 1] = -1;
-	}
-	if (positions[idx * 6 + 1] > 1) {
-		velocity[idx].y *= -1;
-		positions[idx * 6 + 1] = 1;
-	}
+	positions[idx * 6 + 2] += velocity[idx].z * delta;
 }
 
 __global__ void calculateForce(float* positions, float3* forces, float* particleMass, float gravityConstant, int idx) {
@@ -108,26 +94,6 @@ __global__ void calculateForce(float* positions, float3* forces, float* particle
 	forces[id].z += vec.z * force;
 }
 
-__global__ void calculateForceMouse(float* positions, float3* forces, float* particleMass, float gravityConstant, float mouseX, float mouseY) {
-	long long ii = threadIdx.x + blockIdx.x * blockDim.x;
-	int id = ii;
-	if (id >= COUNT) {
-		return;
-	}
-	float x1, x2, y1, y2;
-	x1 = mouseX;
-	y1 = mouseY;
-	x2 = positions[id * 6];
-	y2 = positions[id * 6 + 1];
-	float distance = ((x1 - x2)*(x1 - x2) + (y1 - y2) * (y1 - y2)) + EPS;
-	float force = gravityConstant * MOUSE_MASS * particleMass[id] / distance;
-	float2 vec = make_float2(x1 - x2, y1 - y2);
-	float mag = sqrt(vec.x*vec.x + vec.y*vec.y) + EPS;
-	vec.x /= mag, vec.y /= mag;
-	forces[id].x += vec.x * force;
-	forces[id].y += vec.y * force;
-}
-
 __global__ void setVal(float3* arr, float3 val) {
 	int idx = threadIdx.x + blockIdx.x * blockDim.x;
 	if (idx >= COUNT) return;
@@ -135,7 +101,7 @@ __global__ void setVal(float3* arr, float3 val) {
 }
 #pragma endregion
 
-GLuint MVP_ID;
+GLuint MVP_ID, CAM_LOC_ID;
 glm::mat4 projectionMatrix;
 FPCamera* cam;
 int lastKey = -1;
@@ -193,7 +159,7 @@ int main(int argv, char ** argc)
 	int screenWidth = mode->width;
 	int screenHeight = mode->height;
 
-	mWindow = glfwCreateWindow(screenWidth, screenHeight, "Gravity Sim", monitor, NULL);
+	mWindow = glfwCreateWindow(screenWidth, screenHeight, "Gravity Sim", NULL, NULL);
 
 	if (mWindow == NULL) {
 		fprintf(stderr, "Failed to open GLFW window. If you have an Intel GPU, they are not 3.3 compatible. Try the 2.1 version of the tutorials.\n");
@@ -225,7 +191,7 @@ int main(int argv, char ** argc)
 
 	mTime = glfwGetTime();
 
-	glPointSize(POINT_SIZE);
+	//glPointSize(POINT_SIZE);
 	glMatrixMode(GL_PROJECTION);
 	glLoadIdentity();
 
@@ -242,7 +208,8 @@ int main(int argv, char ** argc)
 	glfwSetKeyCallback(mWindow, &handleKeyPress);
 
 	MVP_ID = glGetUniformLocation(programID, "mvp");
-	projectionMatrix = glm::perspective(45.0f, (float)(mode->width) / mode->height, 0.5f, 100.0f);
+	CAM_LOC_ID = glGetUniformLocation(programID, "cam_loc");
+	projectionMatrix = glm::perspective(60.0f, (float)(mode->width) / mode->height, 0.01f, 1000.0f);
 	cam = new FPCamera();
 
 	glBufferData(GL_ARRAY_BUFFER, COUNT * 6 * sizeof(GLfloat), positions, GL_STATIC_DRAW);
@@ -262,6 +229,7 @@ int main(int argv, char ** argc)
 		glfwSwapBuffers(mWindow);
 		glfwPollEvents();
 	} while (glfwGetKey(mWindow, GLFW_KEY_ESCAPE) != GLFW_PRESS && glfwWindowShouldClose(mWindow) == 0);
+	glfwTerminate();
     return 0;
 }
 
@@ -274,10 +242,10 @@ void Update(float time) {
 	}
 	glfwGetCursorPos(mWindow, &mouseX, &mouseY);
 	glfwSetCursorPos(mWindow, 1920.0f / 2, 1080.0f / 2);
-	//calculateForceMouse <<<(COUNT+1023)/1024, 1024 >>> (positions, forces, masses, G_CONSTANT, mouseX/700.0f*2.0f-1.0f, (700-mouseY) / 700.0f * 2.0f - 1.0f);
 	simulateFrame <<<(COUNT + 1023) / 1024, 1024 >>>(positions, velocity, time, POINT_SIZE, forces, masses, TERMINAL_VELOCITY);
 	cam->setRotation(mouseY - 1080.0f / 2 , -mouseX + 1920.0f / 2, 0.0f);
 	cam->Update(time);
+	glUniform3f(CAM_LOC_ID, cam->getPosition().x, cam->getPosition().y, cam->getPosition().z);
 }
 
 void Draw() {
@@ -287,7 +255,8 @@ void Draw() {
 	glm::mat4 MVP = projectionMatrix * viewMatrix * modelMatrix;
 
 	glUniformMatrix4fv(MVP_ID, 1, GL_FALSE, &MVP[0][0]);
-	
+	glEnable(GL_POINT_SPRITE);
+	glEnable(GL_VERTEX_PROGRAM_POINT_SIZE);
 	glDrawArrays(GL_POINTS, 0, COUNT);
 }
 
